@@ -1,3 +1,5 @@
+import type { Settings, TabGroupColor } from './types.js';
+
 export const TAB_GROUP_COLORS = [
   'grey',
   'blue',
@@ -8,9 +10,9 @@ export const TAB_GROUP_COLORS = [
   'purple',
   'cyan',
   'orange',
-];
+] as const satisfies readonly TabGroupColor[];
 
-export const DEFAULTS = {
+export const DEFAULTS: Settings = {
   enabled: true,
   username: 'yuyakinjo', // 自分の GitHub ログイン名。空ならページの meta から推定
   onlyMine: true,
@@ -32,16 +34,18 @@ export const DEFAULTS = {
   pollMinutes: 1, // 取得間隔（分）。chrome.alarms の下限が 1 分
   badge: true, // オープン PR 件数をアイコンに出す
   notify: true, // レビュー / CI の状態が変わったら通知
+  autoOpenOnPoll: true, // 取得のたびに、まだ開いていない自分の PR をタブで開く（1 PR = 1 タブ）
+  closeMergedOnPoll: true, // マージ / クローズされた自分の PR のタブを閉じる
   autoGroupOnPoll: false, // 取得のたびに開いている PR タブをまとめ直す
 };
 
-export async function getSettings() {
+export async function getSettings(): Promise<Settings> {
   const stored = await chrome.storage.local.get('settings');
-  return { ...DEFAULTS, ...(stored.settings || {}) };
+  return { ...DEFAULTS, ...((stored['settings'] as Partial<Settings> | undefined) ?? {}) };
 }
 
-export async function setSettings(patch) {
-  const next = { ...(await getSettings()), ...patch };
+export async function setSettings(patch: Partial<Settings>): Promise<Settings> {
+  const next: Settings = { ...(await getSettings()), ...patch };
   await chrome.storage.local.set({ settings: next });
   return next;
 }

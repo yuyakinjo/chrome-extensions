@@ -1,10 +1,66 @@
 import { getSettings, setSettings, TAB_GROUP_COLORS } from './lib/settings.js';
 import { needsAttention } from './lib/api.js';
+import type {
+  AuthorSource,
+  MessageResponse,
+  MessageResults,
+  PopupMessage,
+  PrIndex,
+  PrItem,
+  Settings,
+  TabGroupColor,
+  ViewerSource,
+} from './lib/types.js';
 
-const $ = (id) => document.getElementById(id);
-const statusEl = $('status');
+/** popup.html にある要素。id を間違えたらここで型エラーになる。 */
+interface PopupElements {
+  enabled: HTMLInputElement;
+  onlyMine: HTMLInputElement;
+  gatherOnCreate: HTMLInputElement;
+  collapse: HTMLInputElement;
+  poll: HTMLInputElement;
+  badge: HTMLInputElement;
+  notify: HTMLInputElement;
+  autoOpenOnPoll: HTMLInputElement;
+  closeMergedOnPoll: HTMLInputElement;
+  autoGroupOnPoll: HTMLInputElement;
+  username: HTMLInputElement;
+  groupTitle: HTMLInputElement;
+  pollMinutes: HTMLInputElement;
+  token: HTMLInputElement;
+  grouping: HTMLSelectElement;
+  color: HTMLSelectElement;
+  refresh: HTMLButtonElement;
+  gather: HTMLButtonElement;
+  regroup: HTMLButtonElement;
+  openMine: HTMLButtonElement;
+  pruneClosed: HTMLButtonElement;
+  signIn: HTMLButtonElement;
+  signOut: HTMLButtonElement;
+  saveToken: HTMLButtonElement;
+  pollBox: HTMLDetailsElement;
+  diagBox: HTMLDetailsElement;
+  accountBox: HTMLDetailsElement;
+  patBox: HTMLDetailsElement;
+  prList: HTMLUListElement;
+  diag: HTMLDListElement;
+  prsSection: HTMLElement;
+  prCount: HTMLSpanElement;
+  prMeta: HTMLParagraphElement;
+  pollStatus: HTMLParagraphElement;
+  accountState: HTMLParagraphElement;
+  status: HTMLParagraphElement;
+  titleRow: HTMLDivElement;
+  intervalRow: HTMLDivElement;
+}
 
-const COLOR_LABELS = {
+function $<K extends keyof PopupElements>(id: K): PopupElements[K] {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`#${id} が popup.html にありません`);
+  return el as PopupElements[K];
+}
+
+const COLOR_LABELS: Record<TabGroupColor, string> = {
   grey: 'グレー',
   blue: 'ブルー',
   red: 'レッド',
@@ -16,7 +72,7 @@ const COLOR_LABELS = {
   orange: 'オレンジ',
 };
 
-const SOURCE_LABELS = {
+const SOURCE_LABELS: Record<AuthorSource | ViewerSource, string> = {
   settings: '設定の ID',
   poll: '定期取得',
   title: 'タブのタイトル',
@@ -27,42 +83,62 @@ const SOURCE_LABELS = {
   api: 'GitHub API',
 };
 
-function setStatus(text, isError = false) {
-  statusEl.textContent = text;
-  statusEl.classList.toggle('error', isError);
+function setStatus(text: string, isError = false): void {
+  $('status').textContent = text;
+  $('status').classList.toggle('error', isError);
 }
 
-async function send(message) {
+/** background へ問い合わせる。windowId は毎回こちらで足す。 */
+async function send<K extends PopupMessage['type']>(
+  message: Extract<PopupMessage, { type: K }>
+): Promise<MessageResults[K]> {
   const windowId = (await chrome.windows.getCurrent()).id;
-  const res = await chrome.runtime.sendMessage({ ...message, windowId });
+  const res: MessageResponse | undefined = await chrome.runtime.sendMessage({
+    ...message,
+    windowId,
+  });
   if (!res?.ok) throw new Error(res?.error || '不明なエラー');
-  return res;
+  return res as unknown as MessageResults[K];
 }
 
-const withBusy = (id, working, fn) => async () => {
+const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** 押している間だけボタンを止めて、返ってきた文字列をステータスに出す。 */
+type ButtonId = {
+  [K in keyof PopupElements]: PopupElements[K] extends HTMLButtonElement ? K : never;
+}[keyof PopupElements];
+
+const withBusy = (id: ButtonId, working: string, fn: () => Promise<string>) => async () => {
   const btn = $(id);
   btn.disabled = true;
   setStatus(working);
   try {
     setStatus(await fn());
   } catch (e) {
-    setStatus(e.message, true);
+    setStatus(message(e), true);
   } finally {
     btn.disabled = false;
   }
 };
 
-function syncVisibility() {
+function syncVisibility(): void {
   $('titleRow').classList.toggle('hidden', $('grouping').value === 'repo');
   const off = !$('poll').checked;
-  for (const id of ['intervalRow', 'autoGroupOnPoll', 'notify', 'badge']) {
-    $(id).closest('.row, .check').classList.toggle('dim', off);
+  for (const id of [
+    'intervalRow',
+    'autoOpenOnPoll',
+    'closeMergedOnPoll',
+    'autoGroupOnPoll',
+    'notify',
+    'badge',
+  ] as const) {
+    $(id).closest('.row, .check')?.classList.toggle('dim', off);
   }
 }
 
 // ------------------------------------------------------------------ PR 一覧
 
-function relative(ts) {
+function relative(ts: number | null | undefined): string {
   if (!ts) return 'まだ取得していません';
   const sec = Math.round((Date.now() - ts) / 1000);
   if (sec < 60) return `${sec} 秒前に更新`;
@@ -70,9 +146,11 @@ function relative(ts) {
   return `${Math.round(sec / 3600)} 時間前に更新`;
 }
 
+type BadgeKind = 'bad' | 'good' | 'warn' | 'muted';
+
 /** 行に出すラベル。要対応を優先して最大 2 つまで。 */
-function badgesFor(pr) {
-  const out = [];
+function badgesFor(pr: PrItem): Array<[string, BadgeKind]> {
+  const out: Array<[string, BadgeKind]> = [];
   if (pr.mergeable === 'CONFLICTING') out.push(['コンフリクト', 'bad']);
   if (pr.checks === 'FAILURE' || pr.checks === 'ERROR') out.push(['CI 失敗', 'bad']);
   if (pr.reviewDecision === 'CHANGES_REQUESTED') out.push(['要修正', 'bad']);
@@ -83,12 +161,13 @@ function badgesFor(pr) {
   return out.slice(0, 2);
 }
 
-function renderPrs(index) {
+/** 未接続のときは items だけを渡すので、一覧はどのフィールドも欠けうる。 */
+function renderPrs(index: Partial<PrIndex>): void {
   const list = $('prList');
   list.textContent = '';
   $('prCount').textContent = index.items?.length ? ` (${index.items.length})` : '';
 
-  const meta = [];
+  const meta: string[] = [];
   if (index.error) meta.push(`⚠ ${index.error}`);
   else if (index.needsAuth) meta.push('未接続');
   else meta.push(relative(index.fetchedAt));
@@ -127,7 +206,9 @@ function renderPrs(index) {
       })
     );
     for (const [text, kind] of badgesFor(pr)) {
-      line2.append(Object.assign(document.createElement('span'), { className: `tag ${kind}`, textContent: text }));
+      line2.append(
+        Object.assign(document.createElement('span'), { className: `tag ${kind}`, textContent: text })
+      );
     }
 
     btn.append(line1, line2);
@@ -148,9 +229,10 @@ const refresh = withBusy('refresh', '取得しています…', async () => {
 
 // ------------------------------------------------------------------ 判定結果
 
-const src = (s) => (s ? `（${SOURCE_LABELS[s] || s}）` : '');
+const src = (s: AuthorSource | ViewerSource | null | undefined): string =>
+  s ? `（${SOURCE_LABELS[s] || s}）` : '';
 
-async function renderDiagnostics() {
+async function renderDiagnostics(): Promise<void> {
   const dl = $('diag');
   dl.textContent = '';
 
@@ -158,11 +240,11 @@ async function renderDiagnostics() {
   try {
     d = await send({ type: 'DIAGNOSE' });
   } catch (e) {
-    dl.append(Object.assign(document.createElement('dd'), { textContent: e.message }));
+    dl.append(Object.assign(document.createElement('dd'), { textContent: message(e) }));
     return;
   }
 
-  const rows = !d.isPr
+  const rows: Array<[string, string | number | null | undefined]> = !d.isPr
     ? [['このタブ', 'PR ページではありません']]
     : [
         ['PR', d.prKey],
@@ -170,13 +252,14 @@ async function renderDiagnostics() {
         ['自分の ID', d.viewer ? `${d.viewer} ${src(d.viewerSource)}` : '未設定'],
         ['判定', d.mine ? '自分の PR' : '自分の PR ではない'],
         ['入れる先', d.groupTitle],
-        ['現在', d.groupId > -1 ? 'グループ内' : 'グループ外'],
+        ['現在', (d.groupId ?? -1) > -1 ? 'グループ内' : 'グループ外'],
       ];
 
   rows.push([
     '定期取得',
     d.poll
-      ? `${d.poll.periodInMinutes} 分ごと（次回 ${new Date(d.poll.nextAt).toLocaleTimeString('ja-JP')}）`
+      ? `${d.poll.periodInMinutes} 分ごと（次回 ${new Date(d.poll.nextAt).toLocaleTimeString('ja-JP')}）` +
+        (d.poll.autoOpen ? ' / 未オープンの PR を開く' : '')
       : '停止中',
   ]);
 
@@ -188,15 +271,17 @@ async function renderDiagnostics() {
   }
 }
 
-function renderPollStatus(s) {
+function renderPollStatus(s: Settings): void {
   $('pollStatus').textContent = !s.token
     ? '⚠ GitHub と未接続のため停止しています'
-    : s.poll
-      ? `${s.pollMinutes} 分ごとに取得します`
-      : '停止中';
+    : !s.poll
+      ? '停止中'
+      : s.autoOpenOnPoll
+        ? `${s.pollMinutes} 分ごとに取得して、未オープンの PR をタブで開きます`
+        : `${s.pollMinutes} 分ごとに取得します`;
 }
 
-function renderAccount(s) {
+function renderAccount(s: Settings): void {
   const connected = !!s.token;
   $('accountState').textContent = !connected
     ? '未接続です。接続すると自分の PR を自動で取得できます。'
@@ -211,18 +296,35 @@ function renderAccount(s) {
 
 // ------------------------------------------------------------------ 起動
 
-async function init() {
+/** チェックボックスで切り替える設定。Settings 側で真偽値のものだけ。 */
+type CheckId = Extract<
+  { [K in keyof Settings]: Settings[K] extends boolean ? K : never }[keyof Settings],
+  keyof PopupElements
+>;
+
+const CHECK_IDS = [
+  'enabled',
+  'onlyMine',
+  'gatherOnCreate',
+  'collapse',
+  'poll',
+  'badge',
+  'notify',
+  'autoOpenOnPoll',
+  'closeMergedOnPoll',
+  'autoGroupOnPoll',
+] as const satisfies readonly CheckId[];
+
+async function init(): Promise<void> {
   $('color').append(...TAB_GROUP_COLORS.map((c) => new Option(COLOR_LABELS[c] || c, c)));
 
   const s = await getSettings();
-  for (const id of ['enabled', 'onlyMine', 'gatherOnCreate', 'collapse', 'poll', 'badge', 'notify', 'autoGroupOnPoll']) {
-    $(id).checked = s[id];
-  }
+  for (const id of CHECK_IDS) $(id).checked = s[id];
   $('grouping').value = s.grouping;
   $('groupTitle').value = s.groupTitle;
   $('username').value = s.username;
   $('color').value = s.color;
-  $('pollMinutes').value = s.pollMinutes;
+  $('pollMinutes').value = String(s.pollMinutes);
   $('token').value = s.token ? '••••••••••••' : '';
   syncVisibility();
   renderAccount(s);
@@ -241,23 +343,34 @@ async function init() {
       .catch(() => {});
   }
 
-  const bind = (id, prop = 'checked', after) =>
+  /** チェックボックスの設定。変更されたらそのまま保存する。 */
+  const bindCheck = (id: CheckId, after?: (s: Settings) => void) =>
     $(id).addEventListener('change', async () => {
-      const next = await setSettings({ [id]: $(id)[prop] });
+      const next = await setSettings({ [id]: $(id).checked } as Partial<Settings>);
       setStatus('保存しました');
       after?.(next);
     });
 
-  bind('enabled');
-  bind('onlyMine');
-  bind('gatherOnCreate');
-  bind('collapse');
-  bind('badge', 'checked', renderPollStatus);
-  bind('notify');
-  bind('autoGroupOnPoll');
-  bind('color', 'value');
-  bind('groupTitle', 'value');
-  bind('username', 'value', () => renderDiagnostics());
+  /** 文字列を入れる設定。 */
+  const bindValue = (id: 'color' | 'groupTitle' | 'username', after?: (s: Settings) => void) =>
+    $(id).addEventListener('change', async () => {
+      const next = await setSettings({ [id]: $(id).value } as Partial<Settings>);
+      setStatus('保存しました');
+      after?.(next);
+    });
+
+  bindCheck('enabled');
+  bindCheck('onlyMine');
+  bindCheck('gatherOnCreate');
+  bindCheck('collapse');
+  bindCheck('badge', renderPollStatus);
+  bindCheck('notify');
+  bindCheck('autoOpenOnPoll', renderPollStatus);
+  bindCheck('closeMergedOnPoll');
+  bindCheck('autoGroupOnPoll');
+  bindValue('color');
+  bindValue('groupTitle');
+  bindValue('username', () => void renderDiagnostics());
 
   $('poll').addEventListener('change', async () => {
     renderPollStatus(await setSettings({ poll: $('poll').checked }));
@@ -267,13 +380,13 @@ async function init() {
 
   $('pollMinutes').addEventListener('change', async () => {
     const minutes = Math.min(60, Math.max(1, Math.round(Number($('pollMinutes').value) || 1)));
-    $('pollMinutes').value = minutes;
+    $('pollMinutes').value = String(minutes);
     renderPollStatus(await setSettings({ pollMinutes: minutes }));
     setStatus('保存しました');
   });
 
   $('grouping').addEventListener('change', async () => {
-    await setSettings({ grouping: $('grouping').value });
+    await setSettings({ grouping: $('grouping').value as Settings['grouping'] });
     syncVisibility();
     setStatus('保存しました');
   });
@@ -284,7 +397,7 @@ async function init() {
     renderAccount(await setSettings({ token: value, tokenSource: 'pat', authLogin: '' }));
     $('token').value = '••••••••••••';
     setStatus('トークンを保存しました');
-    refresh();
+    void refresh();
   });
 
   // 認証は独立したタブで行う。ポップアップは GitHub に切り替えた時点で閉じてしまうため
@@ -315,7 +428,7 @@ async function init() {
     'click',
     withBusy('regroup', 'グループに入れています…', async () => {
       const res = await send({ type: 'REGROUP_ACTIVE' });
-      renderDiagnostics();
+      void renderDiagnostics();
       return `「${res.groupTitle}」に入れました`;
     })
   );
@@ -328,9 +441,19 @@ async function init() {
     })
   );
 
+  $('pruneClosed').addEventListener(
+    'click',
+    withBusy('pruneClosed', '状態を確認しています…', async () => {
+      const res = await send({ type: 'PRUNE_CLOSED' });
+      return res.closed
+        ? `マージ・クローズ済みの ${res.closed} タブを閉じました`
+        : '閉じる対象のタブはありませんでした';
+    })
+  );
+
   $('diagBox').addEventListener('toggle', () => {
-    if ($('diagBox').open) renderDiagnostics();
+    if ($('diagBox').open) void renderDiagnostics();
   });
 }
 
-init().catch((e) => setStatus(e.message, true));
+init().catch((e: unknown) => setStatus(message(e), true));

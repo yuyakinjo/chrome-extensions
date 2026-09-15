@@ -1,0 +1,19 @@
+{
+  "name": "pr-tab-grouper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GitHub で PR を出すと、自分の PR タブを自動でタブグループにまとめる Chrome 拡張機能",
+  "type": "module",
+  "scripts": {
+    "build": "bun tools/build.ts",
+    "dev": "bun tools/build.ts --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tools.json",
+    "clean": "rm -rf dist",
+    "icons": "bun tools/make-icons.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/chrome": "latest",
+    "typescript": "latest"
+  }
+}

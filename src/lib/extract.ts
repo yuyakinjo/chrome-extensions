@@ -4,6 +4,7 @@
  * content script としても、background からの scripting.executeScript としても
  * 同じコードを使いたいので、ES モジュールではなくグローバルを定義する
  * 古典的なスクリプトにしてある（content script は import できないため）。
+ * 公開する形は src/types/globals.d.ts の PrTabGrouperExtractor。
  *
  * 2026 年時点の GitHub の PR ページは React 化されていて、以前の
  * .gh-header-meta / #partial-discussion-header は存在しない。
@@ -20,15 +21,18 @@
   const HOVERCARD_RE = /^\/users\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\//;
 
   /** <a href="/yuyakinjo"> のような 1 セグメントの href だけをログイン名とみなす。 */
-  const loginFromAnchor = (a) => {
+  const loginFromAnchor = (a: Element | null): string | null => {
     if (!a) return null;
     const hover = a.getAttribute('data-hovercard-url')?.match(HOVERCARD_RE);
-    if (hover) return hover[1];
+    if (hover) return hover[1] ?? null;
     const m = a.getAttribute('href')?.match(LOGIN_HREF_RE);
-    return m ? m[1] : null;
+    return m ? (m[1] ?? null) : null;
   };
 
-  globalThis.__prTabGrouper = {
+  const meta = (name: string): string | null =>
+    document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)?.content?.trim() || null;
+
+  const extractor: PrTabGrouperExtractor = {
     isPrPage: () => PR_PATH_RE.test(location.pathname),
 
     prNumber() {
@@ -38,11 +42,7 @@
 
     viewer() {
       // 未ログインだと content="" になるので、空文字は「取れなかった」扱いにする
-      return (
-        document.querySelector('meta[name="user-login"]')?.content?.trim() ||
-        document.querySelector('meta[name="octolytics-actor-login"]')?.content?.trim() ||
-        null
-      );
+      return meta('user-login') || meta('octolytics-actor-login');
     },
 
     /** 作者のログイン名。確実な順に試す。 */
@@ -50,9 +50,9 @@
       // 1) <title> の「... by <login> · Pull Request #<n> · owner/repo」
       //    セレクタに依存しないので GitHub の DOM 変更に強い
       const num = this.prNumber();
-      let found = null;
+      let found: string | null = null;
       for (const m of document.title.matchAll(TITLE_AUTHOR_RE)) {
-        if (num == null || Number(m[2]) === num) found = m[1];
+        if (num == null || Number(m[2]) === num) found = m[1] ?? null;
       }
       if (found) return found;
 
@@ -86,4 +86,6 @@
       };
     },
   };
+
+  globalThis.__prTabGrouper = extractor;
 })();

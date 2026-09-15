@@ -1,8 +1,38 @@
 import { getSettings, setSettings } from './lib/settings.js';
 import { requestDeviceCode, pollForToken } from './lib/auth.js';
+import type { DeviceCode } from './lib/auth.js';
 import { fetchViewer } from './lib/api.js';
+import type { AuthScope } from './lib/types.js';
 
-const $ = (id) => document.getElementById(id);
+/** auth.html にある要素。 */
+interface AuthElements {
+  setupStep: HTMLElement;
+  codeStep: HTMLElement;
+  doneStep: HTMLElement;
+  howto: HTMLDetailsElement;
+  clientId: HTMLInputElement;
+  includePrivate: HTMLInputElement;
+  start: HTMLButtonElement;
+  copy: HTMLButtonElement;
+  cancel: HTMLButtonElement;
+  close: HTMLButtonElement;
+  scopeHint: HTMLParagraphElement;
+  fillNote: HTMLParagraphElement;
+  doneNote: HTMLParagraphElement;
+  error: HTMLParagraphElement;
+  userCode: HTMLSpanElement;
+  countdown: HTMLSpanElement;
+  verifyLink: HTMLAnchorElement;
+  doneLogin: HTMLElement;
+}
+
+function $<K extends keyof AuthElements>(id: K): AuthElements[K] {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`#${id} が auth.html にありません`);
+  return el as AuthElements[K];
+}
+
+const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /**
  * このページをタブとして開く理由:
@@ -10,20 +40,22 @@ const $ = (id) => document.getElementById(id);
  * 承認されるまで数秒おきにポーリングし続ける必要があるので、独立したタブで走らせる。
  */
 
-const show = (id) => {
-  for (const s of ['setupStep', 'codeStep', 'doneStep']) $(s).hidden = s !== id;
+type StepId = 'setupStep' | 'codeStep' | 'doneStep';
+
+const show = (id: StepId): void => {
+  for (const s of ['setupStep', 'codeStep', 'doneStep'] as const) $(s).hidden = s !== id;
 };
 
-function fail(message) {
-  $('error').textContent = message;
+function fail(text: string): void {
+  $('error').textContent = text;
   $('error').hidden = false;
 }
 
-const clearError = () => {
+const clearError = (): void => {
   $('error').hidden = true;
 };
 
-function renderScopeHint(includePrivate) {
+function renderScopeHint(includePrivate: boolean): void {
   $('scopeHint').textContent = includePrivate
     ? '要求する権限: repo（private を含む PR の読み取り。GitHub の OAuth では書き込みと分けられません）'
     : '要求する権限: public_repo（public リポジトリのみ）';
@@ -31,22 +63,22 @@ function renderScopeHint(includePrivate) {
 
 let cancelled = false;
 
-async function connect() {
+async function connect(): Promise<void> {
   clearError();
   const clientId = $('clientId').value.trim();
   if (!clientId) return fail('Client ID を入力してください。');
 
   const includePrivate = $('includePrivate').checked;
-  const scope = includePrivate ? 'repo' : 'public_repo';
+  const scope: AuthScope = includePrivate ? 'repo' : 'public_repo';
   await setSettings({ clientId, authScope: scope });
 
   $('start').disabled = true;
-  let device;
+  let device: DeviceCode;
   try {
     device = await requestDeviceCode(clientId, scope);
   } catch (e) {
     $('start').disabled = false;
-    return fail(e.message);
+    return fail(message(e));
   }
 
   cancelled = false;
@@ -70,13 +102,14 @@ async function connect() {
     if (cancelled) return;
     show('setupStep');
     $('start').disabled = false;
-    fail(e.message);
+    fail(message(e));
   }
 }
 
 // ------------------------------------------------ GitHub の承認ページへコードを流し込む
 
-async function copyCode(code) {
+async function copyCode(code: string | null): Promise<boolean> {
+  if (!code) return false;
   try {
     await navigator.clipboard.writeText(code);
     return true;
@@ -85,16 +118,19 @@ async function copyCode(code) {
   }
 }
 
+/** コードを入れるのに使った手段。 */
+type FillResult = 'paste' | 'boxes' | 'single' | 'none';
+
 /**
  * GitHub の承認ページは入力欄が 1 文字ずつ 8 個に分かれていて、
  * ?user_code= を付けても埋まらない（2026 年時点の UI）。
  * そこでタブを開いたあとに、こちらから入力欄へ流し込む。
  * 失敗してもクリップボードにコピーしてあるので手で貼れる。
  */
-async function openVerifyTab(device) {
+async function openVerifyTab(device: DeviceCode): Promise<void> {
   const copied = await copyCode(device.userCode); // タブを離れる前にコピーしておく
   const tab = await chrome.tabs.create({ url: device.verifyUrl, active: true });
-  const how = await fillWhenReady(tab.id, device.userCode);
+  const how = tab.id == null ? 'none' : await fillWhenReady(tab.id, device.userCode);
 
   $('fillNote').textContent =
     how === 'none'
@@ -105,10 +141,10 @@ async function openVerifyTab(device) {
 }
 
 /** ページが組み上がるまで何度か試す。承認後の画面遷移でも呼ばれるので、成功するまで待つ。 */
-function fillWhenReady(tabId, code) {
+function fillWhenReady(tabId: number, code: string): Promise<FillResult> {
   return new Promise((resolve) => {
     let settled = false;
-    const done = (how) => {
+    const done = (how: FillResult): void => {
       if (settled) return;
       settled = true;
       chrome.tabs.onUpdated.removeListener(onUpdated);
@@ -117,8 +153,8 @@ function fillWhenReady(tabId, code) {
 
     // MAIN を先に試す: ページと同じ JS コンテキストなので、React が value を
     // 握っている場合でも入力として認識される。未対応の Chrome では例外になるだけ。
-    const attempt = async () => {
-      for (const world of ['MAIN', 'ISOLATED']) {
+    const attempt = async (): Promise<void> => {
+      for (const world of ['MAIN', 'ISOLATED'] as const) {
         const [res] = await chrome.scripting
           .executeScript({ target: { tabId }, world, func: fillUserCode, args: [code] })
           .catch(() => []);
@@ -126,37 +162,41 @@ function fillWhenReady(tabId, code) {
       }
     };
 
-    const onUpdated = (id, info) => {
-      if (id === tabId && info.status === 'complete') attempt();
+    const onUpdated = (id: number, info: chrome.tabs.OnUpdatedInfo): void => {
+      if (id === tabId && info.status === 'complete') void attempt();
     };
     chrome.tabs.onUpdated.addListener(onUpdated);
-    attempt(); // 既に読み込み終わっている場合
+    void attempt(); // 既に読み込み終わっている場合
     setTimeout(() => done('none'), 10000);
   });
 }
 
 /**
  * 承認ページで実行される。executeScript で送られるので外の変数は参照できない。
- * 戻り値は使った手段（'paste' | 'boxes' | 'single' | 'none'）。
+ * 戻り値は使った手段。
  */
-async function fillUserCode(code) {
-  const chars = code.replace(/[^0-9A-Za-z]/g, '').toUpperCase().split('');
-  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function fillUserCode(code: string): Promise<'paste' | 'boxes' | 'single' | 'none'> {
+  const chars = code
+    .replace(/[^0-9A-Za-z]/g, '')
+    .toUpperCase()
+    .split('');
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
   // React などが value を握っている場合、代入だけでは反映されない
-  const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-  const set = (el, value) => {
+  const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  if (!nativeSet) return 'none';
+  const set = (el: HTMLInputElement, value: string): void => {
     nativeSet.call(el, value);
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   };
 
-  const visible = () =>
+  const visible = (): HTMLInputElement[] =>
     [...document.querySelectorAll('input')].filter(
       (el) => !el.disabled && !el.readOnly && el.type !== 'hidden' && el.offsetParent !== null
     );
 
-  const boxes = () => {
+  const boxes = (): HTMLInputElement[] => {
     const all = visible();
     const single = all.filter((el) => el.maxLength === 1);
     if (single.length >= chars.length) return single.slice(0, chars.length);
@@ -168,7 +208,7 @@ async function fillUserCode(code) {
     await wait(100);
   }
 
-  const one = document.querySelector('input[name="user_code"]');
+  const one = document.querySelector<HTMLInputElement>('input[name="user_code"]');
   if (one) {
     set(one, code);
     one.focus();
@@ -177,7 +217,7 @@ async function fillUserCode(code) {
 
   const els = boxes();
   if (!els.length) return 'none';
-  const filled = () => els.every((el, i) => el.value.toUpperCase() === chars[i]);
+  const filled = (): boolean => els.every((el, i) => el.value.toUpperCase() === chars[i]);
 
   // まずは貼り付けハンドラに任せる。分割入力 UI はこれを想定して作られていることが多い
   els[0].focus();
@@ -191,7 +231,7 @@ async function fillUserCode(code) {
   return filled() ? 'boxes' : 'none';
 }
 
-async function finish(token, grantedScope) {
+async function finish(token: string, grantedScope: string): Promise<void> {
   const login = await fetchViewer(token);
   if (!login) {
     show('setupStep');
@@ -215,7 +255,7 @@ async function finish(token, grantedScope) {
   chrome.runtime.sendMessage({ type: 'SYNC_NOW' }).catch(() => {});
 }
 
-async function init() {
+async function init(): Promise<void> {
   const s = await getSettings();
   $('clientId').value = s.clientId;
   $('includePrivate').checked = s.authScope !== 'public_repo';
@@ -225,8 +265,10 @@ async function init() {
   $('includePrivate').addEventListener('change', () =>
     renderScopeHint($('includePrivate').checked)
   );
-  $('start').addEventListener('click', connect);
-  $('clientId').addEventListener('keydown', (e) => e.key === 'Enter' && connect());
+  $('start').addEventListener('click', () => void connect());
+  $('clientId').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') void connect();
+  });
 
   $('copy').addEventListener('click', async () => {
     const ok = await copyCode($('userCode').textContent);
@@ -243,4 +285,4 @@ async function init() {
   $('close').addEventListener('click', () => window.close());
 }
 
-init().catch((e) => fail(e.message));
+init().catch((e: unknown) => fail(message(e)));

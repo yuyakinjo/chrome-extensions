@@ -1,6 +1,6 @@
 /**
  * github.com 上で「PR ページを開いた」ことを検知して service worker に通知する。
- * 実際の DOM 読み取りは lib/extract.js（先に読み込まれる）に任せる。
+ * 実際の DOM 読み取りは lib/extract.ts（先に読み込まれる）に任せる。
  *
  * GitHub は Turbo / React Router でソフトナビゲーションするため、
  * 初回ロードだけでなく URL の変化も監視する。
@@ -12,20 +12,23 @@
 
 // 再注入されても壊れないよう、グローバルに識別子を漏らさない
 (() => {
-  const gh = globalThis.__prTabGrouper;
   const COMPARE_PATH_RE = /^\/[^/]+\/[^/]+\/compare(?:\/|$)/;
 
   // 同じページに新しいインスタンスが入ったときは、まず古いほうを止める
   globalThis.__prTabGrouperStop?.();
 
-  let lastSent = null;
+  // lib/extract.js が先に読み込まれていなければ何もできない
+  if (!globalThis.__prTabGrouper) return;
+  const gh: PrTabGrouperExtractor = globalThis.__prTabGrouper;
+
+  let lastSent: string | null = null;
   let stopped = false;
 
-  const timeouts = new Set();
-  const intervals = new Set();
-  const listeners = [];
+  const timeouts = new Set<number>();
+  const intervals = new Set<number>();
+  const listeners: Array<[EventTarget, string, EventListener]> = [];
 
-  const later = (fn, ms) => {
+  const later = (fn: () => void, ms: number) => {
     const id = setTimeout(() => {
       timeouts.delete(id);
       fn();
@@ -33,15 +36,15 @@
     timeouts.add(id);
   };
 
-  const every = (fn, ms) => intervals.add(setInterval(fn, ms));
+  const every = (fn: () => void, ms: number) => intervals.add(setInterval(fn, ms));
 
-  const on = (target, type, fn) => {
+  const on = (target: EventTarget, type: string, fn: EventListener) => {
     target.addEventListener(type, fn);
     listeners.push([target, type, fn]);
   };
 
   /** 拡張機能がリロード／無効化されると chrome.runtime へのアクセス自体が落ちる。 */
-  function alive() {
+  function alive(): boolean {
     if (stopped) return false;
     try {
       return !!chrome.runtime?.id;
@@ -50,7 +53,7 @@
     }
   }
 
-  function stop() {
+  function stop(): void {
     stopped = true;
     for (const id of timeouts) clearTimeout(id);
     for (const id of intervals) clearInterval(id);
@@ -64,7 +67,7 @@
   globalThis.__prTabGrouperStop = stop;
 
   /** 送信できたら true。作者がまだ読めていなければ false（呼び出し側がリトライする）。 */
-  function report(justCreated) {
+  function report(justCreated: boolean): boolean {
     const snap = gh.snapshot();
     if (!snap) return true; // PR ページではなくなった
 
@@ -77,7 +80,7 @@
     return true;
   }
 
-  function send(payload) {
+  function send(payload: Partial<PrSnapshot> & { justCreated: boolean }): void {
     if (!alive()) return stop();
     try {
       chrome.runtime.sendMessage({ type: 'PR_PAGE', ...payload })?.catch(() => {
@@ -89,7 +92,7 @@
   }
 
   /** 描画途中のことがあるので、作者が読めるまで少しリトライする。 */
-  function reportWithRetry(justCreated) {
+  function reportWithRetry(justCreated: boolean): void {
     let attempt = 0;
     const tick = () => {
       if (!alive()) return stop();
@@ -105,7 +108,7 @@
     tick();
   }
 
-  function watchUrlChanges(onChange) {
+  function watchUrlChanges(onChange: () => void): void {
     let last = location.href;
     const fire = () => {
       if (!alive()) return stop();
@@ -125,7 +128,7 @@
   }
 
   // compare ページからの遷移 = たった今 PR を作成した。初回ロード時のみ信用できる手掛かり。
-  function cameFromComparePage() {
+  function cameFromComparePage(): boolean {
     try {
       const ref = new URL(document.referrer);
       return ref.hostname === 'github.com' && COMPARE_PATH_RE.test(ref.pathname);
@@ -134,10 +137,8 @@
     }
   }
 
-  if (gh) {
-    if (gh.isPrPage()) reportWithRetry(cameFromComparePage());
-    watchUrlChanges(() => {
-      if (gh.isPrPage()) reportWithRetry(false); // ソフトナビ後の referrer は当てにならない
-    });
-  }
+  if (gh.isPrPage()) reportWithRetry(cameFromComparePage());
+  watchUrlChanges(() => {
+    if (gh.isPrPage()) reportWithRetry(false); // ソフトナビ後の referrer は当てにならない
+  });
 })();

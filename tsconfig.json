@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    // Chrome 111+ 前提なので、ダウンレベルせずそのまま出す
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+
+    // ブラウザが読む ESM をそのまま出す。import の指定子は書いたとおりに残す
+    // （'./lib/settings.js' と書けば .ts を解決しつつ .js のまま出力される）
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+
+    // 拡張機能のコードから Bun / Node の型が見えないようにする
+    "types": ["chrome"],
+
+    // dist/ をそのまま「パッケージ化されていない拡張機能」として読み込めるように、
+    // manifest.json が指す src/... のパスを保ったまま出力する
+    "rootDir": ".",
+    "outDir": "dist",
+    "sourceMap": true,
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}

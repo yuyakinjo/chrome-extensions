@@ -13,6 +13,7 @@
 import { fetchMyOpenPrs, needsAttention, AuthError } from './api.js';
 import { rememberMany } from './cache.js';
 import { getSettings } from './settings.js';
+import type { PrIndex, PrItem, Settings } from './types.js';
 
 export const ALARM = 'poll-my-prs';
 export const INDEX_KEY = 'prIndex';
@@ -21,18 +22,29 @@ export const INDEX_KEY = 'prIndex';
 const MIN_MINUTES = 1;
 const MAX_MINUTES = 60;
 
-export const clampMinutes = (n) =>
+export const clampMinutes = (n: unknown): number =>
   Math.min(MAX_MINUTES, Math.max(MIN_MINUTES, Math.round(Number(n) || MIN_MINUTES)));
 
-export async function readIndex() {
+export async function readIndex(): Promise<PrIndex> {
   const stored = await chrome.storage.local.get(INDEX_KEY);
-  return stored[INDEX_KEY] || { items: [], viewer: null, fetchedAt: 0, error: null };
+  return (
+    (stored[INDEX_KEY] as PrIndex | undefined) || {
+      items: [],
+      viewer: null,
+      fetchedAt: 0,
+      error: null,
+    }
+  );
 }
 
 // ------------------------------------------------------------------ スケジュール
 
+export type ScheduleResult =
+  | { scheduled: false; reason: 'off' | 'no-token' }
+  | { scheduled: true; periodInMinutes: number };
+
 /** 設定に合わせてアラームを張り直す。設定変更時と起動時に呼ぶ。 */
-export async function rescheduleSync() {
+export async function rescheduleSync(): Promise<ScheduleResult> {
   const settings = await getSettings();
   await chrome.alarms.clear(ALARM);
 
@@ -49,7 +61,7 @@ export async function rescheduleSync() {
 
 // ------------------------------------------------------------------ バッジ
 
-async function setBadge(index, settings) {
+async function setBadge(index: PrIndex | null, settings: Settings): Promise<void> {
   if (!settings.badge || !index) {
     await chrome.action.setBadgeText({ text: '' });
     return;
@@ -74,7 +86,10 @@ async function setBadge(index, settings) {
 
 // ------------------------------------------------------------------ 変化の検出
 
-const KIND = {
+/** 通知する変化の種類。 */
+export type NotifyKind = 'APPROVED' | 'CHANGES_REQUESTED' | 'CI_FAILED' | 'CONFLICT' | 'CLOSED';
+
+const KIND: Record<NotifyKind, { title: string; attention: boolean }> = {
   APPROVED: { title: '承認されました', attention: false },
   CHANGES_REQUESTED: { title: '修正がリクエストされました', attention: true },
   CI_FAILED: { title: 'CI が失敗しました', attention: true },
@@ -82,21 +97,28 @@ const KIND = {
   CLOSED: { title: 'クローズまたはマージされました', attention: false },
 };
 
-const failed = (s) => s === 'FAILURE' || s === 'ERROR';
+const isNotifyKind = (s: string | null): s is NotifyKind => !!s && s in KIND;
+
+const failed = (s: string | null) => s === 'FAILURE' || s === 'ERROR';
+
+export interface PrEvent {
+  kind: NotifyKind;
+  pr: PrItem;
+}
 
 /**
  * 前回と今回を比べて「知らせる価値のある変化」だけ拾う。
  * 初回（前回が空）は全件が変化に見えてしまうので、呼び出し側で抑止する。
  */
-export function diffPrs(prev, next) {
+export function diffPrs(prev: PrItem[], next: PrItem[]): PrEvent[] {
   const before = new Map(prev.map((p) => [p.key, p]));
-  const events = [];
+  const events: PrEvent[] = [];
 
   for (const pr of next) {
     const was = before.get(pr.key);
     if (!was) continue; // 新しく現れた PR（＝自分が作った直後）は通知しない
 
-    if (pr.reviewDecision !== was.reviewDecision && KIND[pr.reviewDecision]) {
+    if (pr.reviewDecision !== was.reviewDecision && isNotifyKind(pr.reviewDecision)) {
       events.push({ kind: pr.reviewDecision, pr });
     }
     if (failed(pr.checks) && !failed(was.checks)) events.push({ kind: 'CI_FAILED', pr });
@@ -112,7 +134,7 @@ export function diffPrs(prev, next) {
   return events;
 }
 
-async function notifyAll(events) {
+async function notifyAll(events: PrEvent[]): Promise<void> {
   for (const { kind, pr } of events.slice(0, 5)) {
     // 一度に大量に出しても読めないので上限をつける
     const meta = KIND[kind];
@@ -130,29 +152,38 @@ async function notifyAll(events) {
 
 // ------------------------------------------------------------------ 本体
 
-let inFlight = null;
+let inFlight: Promise<PrIndex> | null = null;
+
+export interface SyncOptions {
+  /** 通知を出さない（初回取得や手動更新のとき）。 */
+  silent?: boolean;
+}
 
 /** 取得してキャッシュ・バッジ・通知に反映する。多重起動は 1 本にまとめる。 */
-export function syncMyPrs(options = {}) {
+export function syncMyPrs(options: SyncOptions = {}): Promise<PrIndex> {
   inFlight ??= runSync(options).finally(() => {
     inFlight = null;
   });
   return inFlight;
 }
 
-async function runSync({ silent = false } = {}) {
+async function runSync({ silent = false }: SyncOptions = {}): Promise<PrIndex> {
   const settings = await getSettings();
   const prev = await readIndex();
 
   if (!settings.token) {
     // 未設定は「エラー」ではなく未構成。バッジに ! を出すと壊れたように見えるので消す
-    const index = { ...prev, error: 'Personal Access Token が未設定です', fetchedAt: Date.now() };
+    const index: PrIndex = {
+      ...prev,
+      error: 'Personal Access Token が未設定です',
+      fetchedAt: Date.now(),
+    };
     await chrome.storage.local.set({ [INDEX_KEY]: index });
     await setBadge(null, settings);
     return index;
   }
 
-  let index;
+  let index: PrIndex;
   try {
     const { items, viewer, source, degraded } = await fetchMyOpenPrs(settings.token);
     index = {
@@ -168,7 +199,7 @@ async function runSync({ silent = false } = {}) {
     // 失敗しても前回の一覧は残す。ネットワークが切れただけでバッジが消えると分かりにくい
     index = {
       ...prev,
-      error: e?.message || String(e),
+      error: e instanceof Error ? e.message : String(e),
       needsAuth: e instanceof AuthError,
       fetchedAt: Date.now(),
     };
@@ -180,10 +211,11 @@ async function runSync({ silent = false } = {}) {
   await chrome.storage.local.set({ [INDEX_KEY]: index });
 
   // 「自分の PR」の確定情報。以後この PR はタイトルを読まなくても判定できる
+  // state は「タブを閉じるか」の判定に使う。open で返ってきた時点で OPEN 確定なので上書きする
   await rememberMany(
     index.items.map((pr) => [
       pr.key,
-      { author: index.viewer, mine: true, title: pr.title, url: pr.url },
+      { author: index.viewer, mine: true, title: pr.title, url: pr.url, state: 'OPEN' as const },
     ])
   );
 

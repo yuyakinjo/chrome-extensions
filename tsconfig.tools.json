@@ -1,0 +1,10 @@
+{
+  // ビルドスクリプト用。Bun が直接 .ts を実行するので型チェックだけ行う
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ESNext"],
+    "types": ["bun"]
+  },
+  "include": ["tools"]
+}

@@ -2,7 +2,7 @@
  * 拡張機能のアイコン（紫の角丸 + 白いブランチマーク）を PNG で生成する。
  * 依存ライブラリなしで動かせるよう、zlib で最小限の PNG を自前で書き出している。
  *
- *   node tools/make-icons.mjs
+ *   bun run icons
  */
 import { deflateSync } from 'node:zlib';
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -15,17 +15,17 @@ const SS = 4; // スーパーサンプリング数（1 辺あたり）
 
 // ------------------------------------------------------------------ 形状
 
-const clamp01 = (v) => Math.min(1, Math.max(0, v));
+const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 
 /** 中心原点の角丸長方形までの符号付き距離。 */
-function sdRoundRect(px, py, hw, hh, r) {
+function sdRoundRect(px: number, py: number, hw: number, hh: number, r: number): number {
   const qx = Math.abs(px) - hw + r;
   const qy = Math.abs(py) - hh + r;
   return Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - r;
 }
 
 /** 線分までの距離。 */
-function sdSegment(px, py, ax, ay, bx, by) {
+function sdSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
   const vx = bx - ax;
   const vy = by - ay;
   const t = clamp01(((px - ax) * vx + (py - ay) * vy) / (vx * vx + vy * vy));
@@ -36,26 +36,28 @@ const STROKE = 0.075; // 線の半幅（正規化座標）
 const DOT = 0.105; // 丸の半径
 
 // 右ブランチが左の幹に合流するカーブ（2 次ベジェを折れ線で近似）
-const CURVE = (() => {
-  const [p0, p1, p2] = [
+type Point = readonly [number, number];
+
+const CURVE: Point[] = (() => {
+  const [p0, p1, p2]: Point[] = [
     [0.67, 0.44],
     [0.67, 0.62],
     [0.4, 0.62],
   ];
-  const pts = [];
+  const pts: Point[] = [];
   for (let i = 0; i <= 24; i++) {
     const t = i / 24;
     const u = 1 - t;
     pts.push([
-      u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
-      u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1],
+      u * u * p0![0] + 2 * u * t * p1![0] + t * t * p2![0],
+      u * u * p0![1] + 2 * u * t * p1![1] + t * t * p2![1],
     ]);
   }
   return pts;
 })();
 
 /** 正規化座標 (0..1) でのグリフまでの距離。 */
-function sdGlyph(x, y) {
+function sdGlyph(x: number, y: number): number {
   let d = Math.min(
     sdSegment(x, y, 0.33, 0.28, 0.33, 0.72) - STROKE, // 左の幹
     sdSegment(x, y, 0.67, 0.28, 0.67, 0.46) - STROKE, // 右のブランチ
@@ -64,8 +66,8 @@ function sdGlyph(x, y) {
     Math.hypot(x - 0.67, y - 0.28) - DOT // 右上の丸
   );
   for (let i = 1; i < CURVE.length; i++) {
-    const [ax, ay] = CURVE[i - 1];
-    const [bx, by] = CURVE[i];
+    const [ax, ay] = CURVE[i - 1]!;
+    const [bx, by] = CURVE[i]!;
     d = Math.min(d, sdSegment(x, y, ax, ay, bx, by) - STROKE);
   }
   return d;
@@ -73,7 +75,7 @@ function sdGlyph(x, y) {
 
 // ------------------------------------------------------------------ 描画
 
-function renderRGBA(size) {
+function renderRGBA(size: number): Buffer {
   const buf = Buffer.alloc(size * size * 4);
   const step = 1 / (size * SS);
   const half = step / 2;
@@ -136,13 +138,13 @@ const CRC_TABLE = (() => {
   return t;
 })();
 
-function crc32(buf) {
+function crc32(buf: Buffer): number {
   let c = 0xffffffff;
-  for (const byte of buf) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
+  for (const byte of buf) c = CRC_TABLE[(c ^ byte) & 0xff]! ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 
-function chunk(type, data) {
+function chunk(type: string, data: Buffer): Buffer {
   const len = Buffer.alloc(4);
   len.writeUInt32BE(data.length);
   const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
@@ -151,7 +153,7 @@ function chunk(type, data) {
   return Buffer.concat([len, body, crc]);
 }
 
-function encodePng(rgba, size) {
+function encodePng(rgba: Buffer, size: number): Buffer {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(size, 0);
   ihdr.writeUInt32BE(size, 4);

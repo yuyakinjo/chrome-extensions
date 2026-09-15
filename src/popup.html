@@ -66,6 +66,7 @@
       <button id="gather" class="primary">開いている PR タブを今すぐまとめる</button>
       <button id="regroup">このタブをグループに入れる</button>
       <button id="openMine">自分のオープン PR を全部開く</button>
+      <button id="pruneClosed">終わった PR のタブを閉じる</button>
     </section>
 
     <details id="pollBox">
@@ -94,6 +95,22 @@
         <input type="checkbox" id="notify" />
         <span>レビュー・CI の状態が変わったら通知する</span>
       </label>
+      <label class="check">
+        <input type="checkbox" id="autoOpenOnPoll" />
+        <span>取得のたびに、開いていない自分の PR をタブで開く</span>
+      </label>
+      <p class="hint">
+        GitHub を開いていなくても、取得間隔ごとに「1 PR = 1 タブ」になるよう足りないタブだけを裏で開いて
+        グループに入れます。すでに開いているタブや、手でグループから外したタブには触りません。
+      </p>
+      <label class="check">
+        <input type="checkbox" id="closeMergedOnPoll" />
+        <span>マージ・クローズされた PR のタブを閉じる</span>
+      </label>
+      <p class="hint">
+        自分の PR だと分かっているタブだけが対象です。GitHub に状態を確認して MERGED / CLOSED
+        だったものだけを閉じます。今見ているタブは閉じません（別のタブへ移ったあとに閉じます）。
+      </p>
       <label class="check">
         <input type="checkbox" id="autoGroupOnPoll" />
         <span>取得のたびにタブをまとめ直す</span>

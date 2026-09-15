@@ -1,7 +1,9 @@
 /**
  * GitHub の URL / タイトル解析ユーティリティ。
- * content script からは import できないので、必要な分だけ extract.js 側にも持たせている。
+ * content script からは import できないので、必要な分だけ extract.ts 側にも持たせている。
  */
+
+import type { PrRef } from './types.js';
 
 const PR_PATH_RE = /^\/([^/]+)\/([^/]+)\/pull\/(\d+)(?:\/|$)/;
 const COMPARE_PATH_RE = /^\/([^/]+)\/([^/]+)\/compare(?:\/|$)/;
@@ -17,15 +19,16 @@ const TITLE_AUTHOR_RE =
 export const GITHUB_HOST = 'github.com';
 
 /** PR ページの URL を {owner, repo, number, key} に分解する。PR ページでなければ null。 */
-export function parsePrUrl(url) {
+export function parsePrUrl(url: string | undefined | null): PrRef | null {
+  if (!url) return null;
   try {
     const u = new URL(url);
     if (u.hostname !== GITHUB_HOST) return null;
     const m = u.pathname.match(PR_PATH_RE);
     if (!m) return null;
     return {
-      owner: m[1],
-      repo: m[2],
+      owner: m[1]!,
+      repo: m[2]!,
       number: Number(m[3]),
       key: `${m[1]}/${m[2]}#${m[3]}`,
       nwo: `${m[1]}/${m[2]}`,
@@ -36,7 +39,8 @@ export function parsePrUrl(url) {
 }
 
 /** PR 作成直前の compare ページかどうか。 */
-export function isComparePage(url) {
+export function isComparePage(url: string | undefined | null): boolean {
+  if (!url) return false;
   try {
     const u = new URL(url);
     return u.hostname === GITHUB_HOST && COMPARE_PATH_RE.test(u.pathname);
@@ -50,19 +54,23 @@ export function isComparePage(url) {
  * expectedNumber を渡すと「タイトル中の #番号 が URL の PR 番号と一致するか」まで確認するので、
  * PR タイトル自体に紛らわしい文字列が入っていても誤判定しない。
  */
-export function authorFromTitle(title, expectedNumber) {
+export function authorFromTitle(
+  title: string | undefined | null,
+  expectedNumber?: number | null
+): string | null {
   if (!title) return null;
-  let found = null;
+  let found: string | null = null;
   for (const m of title.matchAll(TITLE_AUTHOR_RE)) {
-    if (expectedNumber == null || Number(m[2]) === expectedNumber) found = m[1];
+    if (expectedNumber == null || Number(m[2]) === expectedNumber) found = m[1] ?? null;
   }
   return found;
 }
 
 /** 比較用に hash / query を落とした正規化 URL。 */
-export function canonicalPrUrl(pr) {
+export function canonicalPrUrl(pr: PrRef): string {
   return `https://${GITHUB_HOST}/${pr.owner}/${pr.repo}/pull/${pr.number}`;
 }
 
 /** ログイン名の比較（GitHub のログイン名は大文字小文字を区別しない）。 */
-export const sameUser = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+export const sameUser = (a: string | null | undefined, b: string | null | undefined): boolean =>
+  !!a && !!b && a.toLowerCase() === b.toLowerCase();
