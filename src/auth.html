@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="auth.css" />
+    <title>GitHub と接続 — PR Tab Grouper</title>
+  </head>
+  <body>
+    <main>
+      <h1>GitHub と接続</h1>
+
+      <!-- 1. Client ID の設定（初回のみ） -->
+      <section id="setupStep">
+        <p class="lead">
+          OAuth App の <strong>Client ID</strong> が一度だけ必要です。<br />
+          Client ID は公開してよい値で、秘密鍵（Client Secret）は使いません。
+        </p>
+
+        <details id="howto">
+          <summary>OAuth App の作り方（1 分）</summary>
+          <ol>
+            <li>
+              <a href="https://github.com/settings/applications/new" target="_blank" rel="noreferrer"
+                >github.com/settings/applications/new</a
+              >
+              を開く
+            </li>
+            <li><b>Application name</b> … 任意（例: PR Tab Grouper）</li>
+            <li><b>Homepage URL</b> … 任意（例: <code>https://github.com/</code>）</li>
+            <li><b>Authorization callback URL</b> … 任意（例: <code>https://github.com/</code>）。Device Flow では使いません</li>
+            <li>作成後の画面で <b>Enable Device Flow</b> にチェックして <b>Update application</b></li>
+            <li>表示された <b>Client ID</b> を下に貼る</li>
+          </ol>
+        </details>
+
+        <div class="row">
+          <input type="text" id="clientId" placeholder="Ov23li... または Iv1..." spellcheck="false" />
+          <button id="start" class="primary">接続する</button>
+        </div>
+
+        <label class="check">
+          <input type="checkbox" id="includePrivate" />
+          <span>private リポジトリの PR も対象にする</span>
+        </label>
+        <p class="hint" id="scopeHint"></p>
+      </section>
+
+      <!-- 2. コードを表示して承認を待つ -->
+      <section id="codeStep" hidden>
+        <p class="lead">GitHub のタブで承認してください。</p>
+        <div class="codeBox">
+          <span id="userCode"></span>
+          <button id="copy" class="ghost">コピー</button>
+        </div>
+        <p class="hint" id="fillNote">コードを入力しています…</p>
+        <p class="hint">
+          タブが開かない場合は
+          <a id="verifyLink" href="#" target="_blank" rel="noreferrer">github.com/login/device</a>
+          を開いてください。
+        </p>
+        <p class="waiting"><span class="spinner"></span><span id="countdown"></span></p>
+        <button id="cancel" class="ghost">やめる</button>
+      </section>
+
+      <!-- 3. 完了 -->
+      <section id="doneStep" hidden>
+        <p class="ok">✓ <b id="doneLogin"></b> として接続しました</p>
+        <p class="hint" id="doneNote"></p>
+        <button id="close" class="primary">閉じる</button>
+      </section>
+
+      <p id="error" role="alert" hidden></p>
+
+      <hr />
+      <p class="hint">
+        接続したあとは
+        <a href="https://github.com/settings/applications" target="_blank" rel="noreferrer"
+          >GitHub の Authorized OAuth Apps</a
+        >
+        からいつでも取り消せます。
+      </p>
+    </main>
+
+    <script type="module" src="auth.js"></script>
+  </body>
+</html>

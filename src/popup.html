@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>PR Tab Grouper</title>
+  </head>
+  <body>
+    <header>
+      <h1>PR Tab Grouper</h1>
+      <label class="switch">
+        <input type="checkbox" id="enabled" />
+        <span>自動グループ化</span>
+      </label>
+    </header>
+
+    <section id="prsSection">
+      <div class="sectionHead">
+        <h2>自分のオープン PR<span id="prCount"></span></h2>
+        <button id="refresh" class="link">更新</button>
+      </div>
+      <ul id="prList"></ul>
+      <p class="hint" id="prMeta"></p>
+    </section>
+
+    <section>
+      <div class="row">
+        <label for="username">自分の ID</label>
+        <input type="text" id="username" placeholder="yuyakinjo" spellcheck="false" />
+      </div>
+      <p class="hint">GitHub のログイン名。ページから推定するより確実なので、これを最優先で使います。</p>
+
+      <div class="row">
+        <label for="grouping">まとめ方</label>
+        <select id="grouping">
+          <option value="single">1 つのグループに集約</option>
+          <option value="repo">リポジトリごとに分ける</option>
+        </select>
+      </div>
+
+      <div class="row" id="titleRow">
+        <label for="groupTitle">グループ名</label>
+        <input type="text" id="groupTitle" placeholder="My PRs" />
+      </div>
+
+      <div class="row">
+        <label for="color">色</label>
+        <select id="color"></select>
+      </div>
+
+      <label class="check">
+        <input type="checkbox" id="onlyMine" />
+        <span>自分が作者の PR だけまとめる</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="gatherOnCreate" />
+        <span>PR 作成時に、開いている自分の PR タブも集める</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="collapse" />
+        <span>グループを折りたたんだ状態で作る</span>
+      </label>
+    </section>
+
+    <section class="actions">
+      <button id="gather" class="primary">開いている PR タブを今すぐまとめる</button>
+      <button id="regroup">このタブをグループに入れる</button>
+      <button id="openMine">自分のオープン PR を全部開く</button>
+    </section>
+
+    <details id="pollBox">
+      <summary>バックグラウンド取得</summary>
+      <p class="hint">
+        自分のオープン PR を定期的に取得して、件数バッジ・状態の通知・PR 判定に使います。
+        <strong>GitHub との接続が必要です。</strong>
+      </p>
+
+      <label class="check">
+        <input type="checkbox" id="poll" />
+        <span>バックグラウンドで定期取得する</span>
+      </label>
+
+      <div class="row" id="intervalRow">
+        <label for="pollMinutes">取得間隔</label>
+        <input type="number" id="pollMinutes" min="1" max="60" step="1" />
+        <span class="unit">分</span>
+      </div>
+
+      <label class="check">
+        <input type="checkbox" id="badge" />
+        <span>アイコンにオープン PR 件数を出す</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="notify" />
+        <span>レビュー・CI の状態が変わったら通知する</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="autoGroupOnPoll" />
+        <span>取得のたびにタブをまとめ直す</span>
+      </label>
+      <p class="hint" id="pollStatus"></p>
+    </details>
+
+    <details id="diagBox">
+      <summary>判定結果を見る（グループ化されないとき）</summary>
+      <dl id="diag"></dl>
+    </details>
+
+    <details id="accountBox">
+      <summary>GitHub アカウント</summary>
+      <p class="hint" id="accountState"></p>
+      <div class="actions">
+        <button id="signIn" class="primary">GitHub で接続する</button>
+        <button id="signOut" class="hidden">接続を解除する</button>
+      </div>
+
+      <details id="patBox">
+        <summary>かわりに Personal Access Token を貼る</summary>
+        <p class="hint">
+          classic token なら <code>repo</code>、fine-grained token なら Pull requests: Read。
+        </p>
+        <div class="row">
+          <input type="password" id="token" placeholder="ghp_..." />
+          <button id="saveToken">保存</button>
+        </div>
+      </details>
+    </details>
+
+    <p id="status" role="status"></p>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
