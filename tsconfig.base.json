@@ -1,4 +1,6 @@
 {
+  // Chrome 拡張機能に共通のコンパイラ設定。各拡張の tsconfig.json から extends する。
+  // types / rootDir / outDir / include は拡張ごとに違うので、ここには置かない。
   "compilerOptions": {
     // Chrome 111+ 前提なので、ダウンレベルせずそのまま出す
     "target": "ES2022",
@@ -12,13 +14,6 @@
     "isolatedModules": true,
     "resolveJsonModule": true,
 
-    // 拡張機能のコードから Bun / Node の型が見えないようにする
-    "types": ["chrome"],
-
-    // dist/ をそのまま「パッケージ化されていない拡張機能」として読み込めるように、
-    // manifest.json が指す src/... のパスを保ったまま出力する
-    "rootDir": ".",
-    "outDir": "dist",
     "sourceMap": true,
 
     "strict": true,
@@ -27,6 +22,5 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
     "skipLibCheck": true
-  },
-  "include": ["src"]
+  }
 }
