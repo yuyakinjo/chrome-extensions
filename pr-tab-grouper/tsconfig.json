@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // 拡張機能のコードから Bun / Node の型が見えないようにする
+    "types": ["chrome"],
+
+    // dist/ をそのまま「パッケージ化されていない拡張機能」として読み込めるように、
+    // manifest.json が指す src/... のパスを保ったまま出力する
+    "rootDir": ".",
+    "outDir": "dist"
+  },
+  "include": ["src"]
+}

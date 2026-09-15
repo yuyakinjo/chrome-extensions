@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "pr-tab-grouper",
+      "name": "chrome-extensions",
       "devDependencies": {
         "@types/bun": "latest",
         "@types/chrome": "latest",

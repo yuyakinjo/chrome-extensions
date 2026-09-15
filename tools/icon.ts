@@ -1,16 +1,18 @@
 /**
- * 拡張機能のアイコン（紫の角丸 + 白いブランチマーク）を PNG で生成する。
- * 依存ライブラリなしで動かせるよう、zlib で最小限の PNG を自前で書き出している。
+ * 依存ライブラリなしでアイコン PNG を書き出すための道具一式。
  *
- *   bun run icons
+ * 拡張機能ごとに違うのは「正規化座標 (0..1) の点に何色を置くか」だけなので、
+ * そこを Paint として外から受け取り、アンチエイリアスと PNG 化はここで面倒を見る。
+ * 使う側は <ext>/tools/make-icons.ts を参照。
  */
 import { deflateSync } from 'node:zlib';
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'icons');
-const SIZES = [16, 32, 48, 128];
+/** 正規化座標での色 (0..255)。透明にしたい点は null を返す。 */
+export type Paint = (x: number, y: number) => readonly [number, number, number] | null;
+
+export const SIZES = [16, 32, 48, 128];
 const SS = 4; // スーパーサンプリング数（1 辺あたり）
 
 // ------------------------------------------------------------------ 形状
@@ -18,64 +20,36 @@ const SS = 4; // スーパーサンプリング数（1 辺あたり）
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 
 /** 中心原点の角丸長方形までの符号付き距離。 */
-function sdRoundRect(px: number, py: number, hw: number, hh: number, r: number): number {
+export function sdRoundRect(
+  px: number,
+  py: number,
+  hw: number,
+  hh: number,
+  r: number
+): number {
   const qx = Math.abs(px) - hw + r;
   const qy = Math.abs(py) - hh + r;
   return Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - r;
 }
 
 /** 線分までの距離。 */
-function sdSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+export function sdSegment(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+): number {
   const vx = bx - ax;
   const vy = by - ay;
   const t = clamp01(((px - ax) * vx + (py - ay) * vy) / (vx * vx + vy * vy));
   return Math.hypot(px - ax - vx * t, py - ay - vy * t);
 }
 
-const STROKE = 0.075; // 線の半幅（正規化座標）
-const DOT = 0.105; // 丸の半径
-
-// 右ブランチが左の幹に合流するカーブ（2 次ベジェを折れ線で近似）
-type Point = readonly [number, number];
-
-const CURVE: Point[] = (() => {
-  const [p0, p1, p2]: Point[] = [
-    [0.67, 0.44],
-    [0.67, 0.62],
-    [0.4, 0.62],
-  ];
-  const pts: Point[] = [];
-  for (let i = 0; i <= 24; i++) {
-    const t = i / 24;
-    const u = 1 - t;
-    pts.push([
-      u * u * p0![0] + 2 * u * t * p1![0] + t * t * p2![0],
-      u * u * p0![1] + 2 * u * t * p1![1] + t * t * p2![1],
-    ]);
-  }
-  return pts;
-})();
-
-/** 正規化座標 (0..1) でのグリフまでの距離。 */
-function sdGlyph(x: number, y: number): number {
-  let d = Math.min(
-    sdSegment(x, y, 0.33, 0.28, 0.33, 0.72) - STROKE, // 左の幹
-    sdSegment(x, y, 0.67, 0.28, 0.67, 0.46) - STROKE, // 右のブランチ
-    Math.hypot(x - 0.33, y - 0.28) - DOT, // 左上の丸
-    Math.hypot(x - 0.33, y - 0.72) - DOT, // 左下の丸
-    Math.hypot(x - 0.67, y - 0.28) - DOT // 右上の丸
-  );
-  for (let i = 1; i < CURVE.length; i++) {
-    const [ax, ay] = CURVE[i - 1]!;
-    const [bx, by] = CURVE[i]!;
-    d = Math.min(d, sdSegment(x, y, ax, ay, bx, by) - STROKE);
-  }
-  return d;
-}
-
 // ------------------------------------------------------------------ 描画
 
-function renderRGBA(size: number): Buffer {
+function renderRGBA(size: number, paint: Paint): Buffer {
   const buf = Buffer.alloc(size * size * 4);
   const step = 1 / (size * SS);
   const half = step / 2;
@@ -89,25 +63,11 @@ function renderRGBA(size: number): Buffer {
 
       for (let sy = 0; sy < SS; sy++) {
         for (let sx = 0; sx < SS; sx++) {
-          const x = (px * SS + sx) * step + half;
-          const y = (py * SS + sy) * step + half;
-
-          // 背景（角丸 + 縦方向グラデーション）
-          if (sdRoundRect(x - 0.5, y - 0.5, 0.5, 0.5, 0.22) > 0) continue;
-          const t = y;
-          let cr = 0x82 + (0x66 - 0x82) * t;
-          let cg = 0x50 + (0x39 - 0x50) * t;
-          let cb = 0xdf + (0xba - 0xdf) * t;
-
-          // グリフ（白）
-          if (sdGlyph(x, y) <= 0) {
-            cr = 0xff;
-            cg = 0xff;
-            cb = 0xff;
-          }
-          r += cr;
-          g += cg;
-          b += cb;
+          const color = paint((px * SS + sx) * step + half, (py * SS + sy) * step + half);
+          if (!color) continue;
+          r += color[0];
+          g += color[1];
+          b += color[2];
           a += 255;
         }
       }
@@ -175,9 +135,12 @@ function encodePng(rgba: Buffer, size: number): Buffer {
   ]);
 }
 
-mkdirSync(OUT_DIR, { recursive: true });
-for (const size of SIZES) {
-  const file = join(OUT_DIR, `icon${size}.png`);
-  writeFileSync(file, encodePng(renderRGBA(size), size));
-  console.log(`wrote ${file}`);
+/** icon<size>.png を outDir に書き出す。 */
+export function writeIcons(outDir: string, paint: Paint, sizes: number[] = SIZES): void {
+  mkdirSync(outDir, { recursive: true });
+  for (const size of sizes) {
+    const file = join(outDir, `icon${size}.png`);
+    writeFileSync(file, encodePng(renderRGBA(size, paint), size));
+    console.log(`wrote ${file}`);
+  }
 }
