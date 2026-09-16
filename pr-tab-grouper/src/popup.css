@@ -237,11 +237,18 @@ button.link:disabled {
   font-size: 12px;
 }
 
+.pr {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .prLink {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 5px 6px;
   border: none;
   border-radius: 6px;
@@ -251,6 +258,17 @@ button.link:disabled {
 
 .prLink:hover {
   background: rgba(127, 127, 127, 0.14);
+}
+
+/* 非表示にした PR。一覧には残すが、目立たせない */
+.pr.hiddenPr .prLink {
+  opacity: 0.55;
+}
+
+.prHide {
+  flex: none;
+  padding: 2px 4px;
+  font-size: 10px;
 }
 
 .pr.attention .prTitle {
