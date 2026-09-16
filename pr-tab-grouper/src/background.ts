@@ -8,6 +8,7 @@ import {
 } from './lib/github.js';
 import { getSettings } from './lib/settings.js';
 import { readCache, rememberPr, rememberMany } from './lib/cache.js';
+import { readHidden, hidePr, unhidePrs, reconcileHidden } from './lib/hidden.js';
 import { fetchViewer, fetchPrAuthor, fetchPrStates } from './lib/api.js';
 import { ALARM, syncMyPrs, rescheduleSync, readIndex } from './lib/sync.js';
 import type {
@@ -69,8 +70,57 @@ async function keptOpenKeys(prKeys: string[]): Promise<Set<string>> {
   return new Set(prKeys.filter((k) => got[keepKey(k)]));
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  chrome.storage.session.remove([comparedKey(tabId), createdKey(tabId)]);
+// ------------------------------------------ 閉じられたタブがどの PR だったかを控える
+
+const tabPrKey = (tabId: number) => `tab:${tabId}`;
+
+/**
+ * onRemoved には URL が来ないので、閉じられる前に控えておく。
+ * これが無いと「手で閉じたタブ」を非表示の意思表示として扱えない。
+ */
+async function noteTabPr(tab: chrome.tabs.Tab, pr: PrRef | null): Promise<void> {
+  if (tab.id == null) return;
+  // シークレットのタブは定期取得で開き直さないので、控える意味がない
+  if (!pr || tab.incognito) await chrome.storage.session.remove(tabPrKey(tab.id));
+  else await chrome.storage.session.set({ [tabPrKey(tab.id)]: pr.key });
+}
+
+/** 開いている PR タブの控えを取り直す。拡張機能のリロード後の取りこぼしを埋める。 */
+async function noteOpenPrTabs(): Promise<void> {
+  const entries: Record<string, string> = {};
+  for (const tab of await chrome.tabs.query({})) {
+    if (tab.id == null || tab.incognito) continue;
+    const pr = parsePrUrl(tab.url || tab.pendingUrl || '');
+    if (pr) entries[tabPrKey(tab.id)] = pr.key;
+  }
+  if (Object.keys(entries).length) await chrome.storage.session.set(entries);
+}
+
+/**
+ * 手で閉じた PR タブを「非表示」として覚える。これが無いと次の取得で開き直される。
+ *
+ * 対象は定期取得が open として追いかけている自分の PR だけ。他のタブはそもそも
+ * 開き直されないので、印を置いても解除の一覧が汚れるだけになる。
+ */
+async function hideClosedTab(prKey: string): Promise<void> {
+  const settings = await getSettings();
+  // 開き直さない設定なら、閉じたタブは閉じたままになる。印は要らない
+  if (!settings.autoOpenOnPoll) return;
+  const index = await readIndex();
+  const pr = index.items.find((item) => item.key === prKey);
+  // 拡張機能が閉じるのは一覧から消えた PR のタブだけなので、自動で閉じた分はここで弾かれる
+  if (!pr) return;
+  await hidePr(pr);
+}
+
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  (async () => {
+    const stored = await chrome.storage.session.get(tabPrKey(tabId));
+    const prKey = stored[tabPrKey(tabId)];
+    await chrome.storage.session.remove([comparedKey(tabId), createdKey(tabId), tabPrKey(tabId)]);
+    // ウィンドウごと閉じたときは「このタブを消したい」ではないので、印は置かない
+    if (typeof prKey === 'string' && !removeInfo.isWindowClosing) await hideClosedTab(prKey);
+  })().catch(() => {});
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
@@ -84,6 +134,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         await chrome.storage.session.remove(comparedKey(tabId));
       }
     }
+  }
+
+  // 手で閉じられたときに「どの PR だったか」を引けるようにしておく
+  if (changeInfo.url || changeInfo.status === 'complete') {
+    await noteTabPr(tab, parsePrUrl(tab.url || tab.pendingUrl || '')).catch(() => {});
   }
 
   // タイトルは URL より少し遅れて決まるので、title / complete の両方で判定し直す
@@ -114,6 +169,11 @@ async function reflectIndexOnTabs(index: PrIndex): Promise<void> {
   // 取得に失敗した回の一覧は前回のものなので、それを元にタブを開いたり閉じたりしない
   const fresh = !index.error;
   const gather = settings.autoGroupOnPoll && settings.enabled;
+
+  // 手で閉じたタブを拾えるよう控えを取り直す。拡張機能のリロード直後もここで揃う
+  await noteOpenPrTabs().catch(() => {});
+  // 非表示の解除はタブを開く前に済ませる（要対応に転じた PR はこの回で戻ってくる）
+  if (fresh) await reconcileHidden(index.items || []).catch(() => []);
 
   // 終わった PR のタブを片付けてから、足りないタブを開く
   if (fresh && settings.closeMergedOnPoll) await pruneClosedPrTabs(index, settings);
@@ -257,7 +317,10 @@ function bucket(buckets: Map<string, number[]>, title: string, tabId: number): v
 async function openOrFocus(url: string, windowId?: number): Promise<chrome.tabs.Tab | null> {
   const target = parsePrUrl(url);
   // ここへ来るのは通知やポップアップからの明示的な操作だけ。閉じた PR でも閉じ返さない
-  if (target) await keepPrOpen(target.key);
+  if (target) {
+    await keepPrOpen(target.key);
+    await unhidePrs([target.key]); // 自分で開いたものは「非表示」ではない
+  }
 
   const tabs = await chrome.tabs.query({});
   const hit = tabs.find((t) => {
@@ -502,6 +565,26 @@ async function gatherPrTabs(
   return { grouped, groups: buckets.size };
 }
 
+/** PR を裏で 1 枚開く。定期取得と「非表示を戻す」で共有する。 */
+async function createPrTab(url: string, windowId: number): Promise<number | null> {
+  const tab = await chrome.tabs.create({ url, windowId, active: false }).catch(() => null);
+  if (!tab?.id) return null; // ウィンドウが閉じられた直後など
+  await noteTabPr(tab, parsePrUrl(url));
+  return tab.id;
+}
+
+/** その PR のタブを閉じる。非表示にしたときの後片付け。 */
+async function closePrTabs(prKey: string): Promise<number> {
+  let closed = 0;
+  for (const tab of await chrome.tabs.query({})) {
+    if (tab.id == null || tab.pinned || tab.incognito) continue;
+    if (parsePrUrl(tab.url || tab.pendingUrl || '')?.key !== prKey) continue;
+    await chrome.tabs.remove(tab.id).catch(() => {}); // 既に閉じられていた場合
+    closed++;
+  }
+  return closed;
+}
+
 /** 既に開いている PR タブの key の集合。同じ PR を 2 枚開かないための判定に使う。 */
 async function openPrKeys(query: chrome.tabs.QueryInfo = {}): Promise<Set<string>> {
   const tabs = await chrome.tabs.query(query);
@@ -527,22 +610,21 @@ async function autoOpenMyPrs(
   if (!index.items?.length) return { opened: 0, grouped: 0 };
 
   // 重複判定は全ウィンドウを見る。別ウィンドウで開いている PR を 2 枚目として開かないため
-  const already = await openPrKeys();
+  const [already, hidden] = await Promise.all([openPrKeys(), readHidden()]);
 
   const buckets = new Map<string, number[]>();
   let opened = 0;
   for (const pr of index.items) {
     const parsed = parsePrUrl(pr.url);
-    if (!parsed || already.has(parsed.key)) continue;
+    // 非表示にした PR はここで外れる。手で閉じたタブが 1 分後に戻ってこないのはこれのため
+    if (!parsed || already.has(parsed.key) || hidden[parsed.key]) continue;
 
-    const tab = await chrome.tabs
-      .create({ url: pr.url, windowId, active: false })
-      .catch(() => null);
-    if (!tab?.id) continue; // ウィンドウが閉じられた直後など
+    const tabId = await createPrTab(pr.url, windowId);
+    if (tabId == null) continue;
     already.add(parsed.key);
     opened++;
 
-    bucket(buckets, groupTitleFor(settings, parsed), tab.id);
+    bucket(buckets, groupTitleFor(settings, parsed), tabId);
   }
 
   // 開いたタブは onUpdated 側でも判定されるが、タイトルが決まるまで待たずにここで入れてしまう
@@ -660,13 +742,14 @@ async function openMyPrs(
   if (index.error && !index.items.length) throw new Error(index.error);
   if (!index.items.length) return { opened: 0, grouped: 0, groups: 0 };
 
-  const already = await openPrKeys({ windowId });
+  const [already, hidden] = await Promise.all([openPrKeys({ windowId }), readHidden()]);
 
   let opened = 0;
   for (const pr of index.items) {
     const parsed = parsePrUrl(pr.url);
-    if (!parsed || already.has(parsed.key)) continue;
-    await chrome.tabs.create({ url: pr.url, windowId, active: false });
+    // 非表示にした PR は手動でもここでは開かない。戻すのはポップアップの「戻す」だけ
+    if (!parsed || already.has(parsed.key) || hidden[parsed.key]) continue;
+    if ((await createPrTab(pr.url, windowId)) == null) continue;
     opened++;
   }
 
@@ -772,6 +855,31 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendRespons
         case 'OPEN_PR': {
           await openOrFocus(msg.url, await currentWindowId(msg.windowId));
           return sendResponse({ ok: true });
+        }
+        case 'HIDE_PR': {
+          const index = await readIndex();
+          const pr = index.items.find((item) => item.key === msg.key);
+          if (!pr) return sendResponse({ ok: false, error: '一覧にない PR です' });
+          await hidePr(pr);
+          return sendResponse({ ok: true, closed: await closePrTabs(pr.key) });
+        }
+        case 'UNHIDE_PR': {
+          await unhidePrs([msg.key]);
+          const index = await readIndex();
+          const pr = index.items.find((item) => item.key === msg.key);
+          const parsed = pr ? parsePrUrl(pr.url) : null;
+          // 一覧から消えた PR は印を外すだけ。開き直す一覧に載っていない
+          if (!pr || !parsed) return sendResponse({ ok: true, opened: 0 });
+          if ((await openPrKeys()).has(parsed.key)) return sendResponse({ ok: true, opened: 0 });
+
+          const settings = await getSettings();
+          const windowId = await currentWindowId(msg.windowId);
+          const tabId = await createPrTab(pr.url, windowId);
+          if (tabId == null) return sendResponse({ ok: true, opened: 0 });
+          if (settings.enabled) {
+            await addTabsToGroup([tabId], windowId, groupTitleFor(settings, parsed), settings);
+          }
+          return sendResponse({ ok: true, opened: 1 });
         }
         case 'DIAGNOSE': {
           const windowId = await currentWindowId(msg.windowId);

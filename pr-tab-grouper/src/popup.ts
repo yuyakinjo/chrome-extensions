@@ -1,5 +1,6 @@
 import { getSettings, setSettings, TAB_GROUP_COLORS } from './lib/settings.js';
 import { needsAttention } from './lib/api.js';
+import { readHidden } from './lib/hidden.js';
 import type {
   AuthorSource,
   MessageResponse,
@@ -161,11 +162,47 @@ function badgesFor(pr: PrItem): Array<[string, BadgeKind]> {
   return out.slice(0, 2);
 }
 
+/** 非表示にする／戻すボタン。押している間だけ止めて、終わったら一覧を描き直す。 */
+function hideToggle(pr: PrItem, isHidden: boolean, redraw: () => void): HTMLButtonElement {
+  const btn = Object.assign(document.createElement('button'), {
+    className: 'prHide link',
+    textContent: isHidden ? '戻す' : '非表示',
+    title: isHidden
+      ? 'タブを開き直して、また自動で開くようにします'
+      : 'タブを閉じて、定期取得でも開き直さないようにします',
+  });
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      if (isHidden) {
+        const res = await send({ type: 'UNHIDE_PR', key: pr.key });
+        setStatus(res.opened ? 'タブを開き直しました' : '非表示を解除しました');
+      } else {
+        const res = await send({ type: 'HIDE_PR', key: pr.key });
+        setStatus(res.closed ? '非表示にしてタブを閉じました' : '非表示にしました');
+      }
+      redraw();
+    } catch (e) {
+      setStatus(message(e), true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  return btn;
+}
+
 /** 未接続のときは items だけを渡すので、一覧はどのフィールドも欠けうる。 */
-function renderPrs(index: Partial<PrIndex>): void {
+async function renderPrs(index: Partial<PrIndex>): Promise<void> {
   const list = $('prList');
   list.textContent = '';
-  $('prCount').textContent = index.items?.length ? ` (${index.items.length})` : '';
+
+  const hidden = await readHidden();
+  const items = index.items ?? [];
+  const hiddenCount = items.filter((pr) => hidden[pr.key]).length;
+  $('prCount').textContent = items.length
+    ? ` (${items.length}${hiddenCount ? ` / 非表示 ${hiddenCount}` : ''})`
+    : '';
 
   const meta: string[] = [];
   if (index.error) meta.push(`⚠ ${index.error}`);
@@ -174,7 +211,7 @@ function renderPrs(index: Partial<PrIndex>): void {
   if (index.degraded) meta.push('※ GraphQL が使えないため状態は取得できていません');
   $('prMeta').textContent = meta.join(' / ');
 
-  if (!index.items?.length) {
+  if (!items.length) {
     const li = document.createElement('li');
     li.className = 'empty';
     li.textContent = index.needsAuth
@@ -186,9 +223,14 @@ function renderPrs(index: Partial<PrIndex>): void {
     return;
   }
 
-  for (const pr of index.items) {
+  const redraw = () => void renderPrs(index);
+  // 非表示にしたものは下にまとめる（同じ並び順のまま後ろへ回す）
+  const ordered = [...items].sort((a, b) => Number(!!hidden[a.key]) - Number(!!hidden[b.key]));
+
+  for (const pr of ordered) {
+    const isHidden = !!hidden[pr.key];
     const li = document.createElement('li');
-    li.className = needsAttention(pr) ? 'pr attention' : 'pr';
+    li.className = `pr${needsAttention(pr) ? ' attention' : ''}${isHidden ? ' hiddenPr' : ''}`;
 
     const btn = document.createElement('button');
     btn.className = 'prLink';
@@ -205,7 +247,10 @@ function renderPrs(index: Partial<PrIndex>): void {
         textContent: `${pr.nwo} #${pr.number}`,
       })
     );
-    for (const [text, kind] of badgesFor(pr)) {
+    const badges: Array<[string, BadgeKind]> = isHidden
+      ? [['非表示', 'muted'], ...badgesFor(pr)]
+      : badgesFor(pr);
+    for (const [text, kind] of badges) {
       line2.append(
         Object.assign(document.createElement('span'), { className: `tag ${kind}`, textContent: text })
       );
@@ -215,14 +260,14 @@ function renderPrs(index: Partial<PrIndex>): void {
     btn.addEventListener('click', () => {
       send({ type: 'OPEN_PR', url: pr.url }).then(() => window.close());
     });
-    li.append(btn);
+    li.append(btn, hideToggle(pr, isHidden, redraw));
     list.append(li);
   }
 }
 
 const refresh = withBusy('refresh', '取得しています…', async () => {
   const index = await send({ type: 'SYNC_NOW' });
-  renderPrs(index); // エラーでも前回の一覧は残っているので先に描く
+  await renderPrs(index); // エラーでも前回の一覧は残っているので先に描く
   if (index.error) throw new Error(index.error);
   return '更新しました';
 });
@@ -332,12 +377,12 @@ async function init(): Promise<void> {
 
   // 保存済みの一覧をまず出して、開くたびに裏で取り直す
   if (!s.token) {
-    renderPrs({ items: [], needsAuth: true });
+    await renderPrs({ items: [], needsAuth: true });
   } else {
-    renderPrs(await send({ type: 'GET_PRS' }));
+    await renderPrs(await send({ type: 'GET_PRS' }));
     send({ type: 'SYNC_NOW' })
       .then((index) => {
-        renderPrs(index);
+        void renderPrs(index);
         if (index.needsAuth) setStatus('GitHub と接続し直してください', true);
       })
       .catch(() => {});
@@ -408,7 +453,7 @@ async function init(): Promise<void> {
 
   $('signOut').addEventListener('click', async () => {
     renderAccount(await setSettings({ token: '', tokenSource: '', authLogin: '' }));
-    renderPrs({ items: [], needsAuth: true });
+    void renderPrs({ items: [], needsAuth: true });
     setStatus('接続を解除しました。GitHub 側の認可は Authorized OAuth Apps から取り消せます');
   });
 

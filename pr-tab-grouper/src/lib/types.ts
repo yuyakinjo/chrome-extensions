@@ -89,6 +89,21 @@ export interface CacheEntry {
 
 export type PrCache = Record<string, CacheEntry>;
 
+// ------------------------------------------------------------------ 非表示
+
+/** 要対応かどうかの判定に関わる分だけを切り出した PR の状態。 */
+export type HiddenSnapshot = Pick<PrItem, 'reviewDecision' | 'checks' | 'mergeable'>;
+
+/** 「定期取得で開き直さない」印の 1 件。 */
+export interface HiddenEntry {
+  /** 非表示にした時刻。 */
+  at: number;
+  /** 非表示にした時点の状態。ここから「要対応に転じたか」を判定する。 */
+  seen: HiddenSnapshot;
+}
+
+export type HiddenPrs = Record<string, HiddenEntry>;
+
 // ------------------------------------------------------------------ メッセージ
 
 /** ポップアップの「判定結果を見る」に出す内容。 */
@@ -126,6 +141,8 @@ export type ExtensionMessage =
   | { type: 'GET_PRS'; windowId?: number }
   | { type: 'SYNC_NOW'; windowId?: number }
   | { type: 'OPEN_PR'; url: string; windowId?: number }
+  | { type: 'HIDE_PR'; key: string; windowId?: number }
+  | { type: 'UNHIDE_PR'; key: string; windowId?: number }
   | { type: 'DIAGNOSE'; windowId?: number };
 
 /** ポップアップから送れるメッセージ（PR_PAGE は content script 専用）。 */
@@ -140,6 +157,8 @@ export interface MessageResults {
   GET_PRS: PrIndex;
   SYNC_NOW: PrIndex;
   OPEN_PR: Record<string, never>;
+  HIDE_PR: { closed: number };
+  UNHIDE_PR: { opened: number };
   DIAGNOSE: Diagnosis;
 }
 
