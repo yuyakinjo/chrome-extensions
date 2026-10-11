@@ -8,6 +8,7 @@ TypeScript で書いた Chrome 拡張機能を置いておくリポジトリで�
 | ディレクトリ | 内容 |
 | --- | --- |
 | [pr-tab-grouper/](pr-tab-grouper/) | GitHub の自分の Pull Request タブを、Chrome のタブグループに自動でまとめる |
+| [auto-pip/](auto-pip/) | 動画のタブから離れると、自動でピクチャインピクチャを表示する |
 
 ## 使い方
 
@@ -17,6 +18,7 @@ TypeScript で書いた Chrome 拡張機能を置いておくリポジトリで�
 bun install
 
 bun run build pr-tab-grouper   # pr-tab-grouper/dist/ を作り直す
+bun run build auto-pip         # auto-pip/dist/ を作り直す
 bun run dev   pr-tab-grouper   # tsc --watch + html/css/icons の監視
 bun run typecheck              # 出力せずに型だけ見る（全拡張機能 + tools）
 bun run clean                  # 全拡張機能の dist/ を消す
